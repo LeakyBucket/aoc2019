@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+    "fuel_requirement",
+    "intcode"
+]
