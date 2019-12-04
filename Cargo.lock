@@ -9,6 +9,10 @@ name = "intcode"
 version = "0.1.0"
 
 [[package]]
+name = "password"
+version = "0.1.0"
+
+[[package]]
 name = "wiring"
 version = "0.1.0"
 

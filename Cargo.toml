@@ -3,5 +3,6 @@
 members = [
     "fuel_requirement",
     "intcode",
-    "wiring"
+    "wiring",
+    "password"
 ]
