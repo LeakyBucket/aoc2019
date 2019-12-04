@@ -2,7 +2,7 @@
 struct Password {
     decrease: bool,
     repeat: bool,
-    invalid_repeat: bool,
+    valid_repeat: bool,
     repeat_len: u32,
     len: u32,
     value: u32,
@@ -13,7 +13,7 @@ impl Password {
         Password {
             decrease: false,
             repeat: false,
-            invalid_repeat: false,
+            valid_repeat: false,
             repeat_len: 1,
             len: len,
             value: val,
@@ -45,16 +45,16 @@ impl Password {
             previous = digit;
         }
 
-        !self.decrease && self.repeat && !self.invalid_repeat
+        !self.decrease && self.repeat && self.valid_repeat
     }
 
     fn check_repeat(&mut self, digit: u32, previous: u32, at_end: bool) {
         if digit == previous {
             self.repeat = true;
             self.repeat_len = self.repeat_len + 1;
-            if at_end && (self.repeat_len % 2 == 1) { self.invalid_repeat = true; }
+            if at_end && (self.repeat_len == 2) { self.valid_repeat = true; }
         } else {
-            if (self.repeat_len != 1) && (self.repeat_len % 2 == 1) { self.invalid_repeat = true; }
+            if self.repeat_len == 2 { self.valid_repeat = true; }
             self.repeat_len = 1;
         }
     }
@@ -112,28 +112,28 @@ mod tests {
     fn valid_quad() {
         let mut password = Password::new(111123, 6);
 
-        assert_eq!(true, password.valid());
+        assert_eq!(false, password.valid());
     }
 
     #[test]
     fn invalid_triple_with_valid_repeat() {
         let mut password = Password::new(222334, 6);
 
-        assert_eq!(false, password.valid());
+        assert_eq!(true, password.valid());
     }
 
     #[test]
     fn invalid_triple_at_end() {
         let mut password = Password::new(112333, 6);
 
-        assert_eq!(false, password.valid());
+        assert_eq!(true, password.valid());
     }
 
     #[test]
     fn invalid_triple_end_with_valid_double() {
         let mut password = Password::new(122444, 6);
 
-        assert_eq!(false, password.valid());
+        assert_eq!(true, password.valid());
     }
 
     #[test]
@@ -161,14 +161,14 @@ mod tests {
     fn triple_then_double() {
         let mut password = Password::new(111233, 6);
 
-        assert_eq!(false, password.valid());
+        assert_eq!(true, password.valid());
     }
 
     #[test]
     fn four_ender() {
         let mut password = Password::new(123333, 6);
 
-        assert_eq!(true, password.valid());
+        assert_eq!(false, password.valid());
     }
 
     #[test]
@@ -182,14 +182,14 @@ mod tests {
     fn four_starter() {
         let mut password = Password::new(111123, 6);
 
-        assert_eq!(true, password.valid());
+        assert_eq!(false, password.valid());
     }
 
     #[test]
     fn sixer() {
         let mut password = Password::new(111111, 6);
 
-        assert_eq!(true, password.valid());
+        assert_eq!(false, password.valid());
     }
 
     #[test]
