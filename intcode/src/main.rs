@@ -6,6 +6,7 @@ use std::io::SeekFrom;
 use std::path::Path;
 use std::process::exit;
 
+#[derive(Debug)]
 struct Memory {
     bucket: RefCell<Vec<i32>>,
 }
@@ -120,9 +121,13 @@ impl Instruction {
         match op {
             OpCode::Add => 4,
             OpCode::Mul => 4,
+            OpCode::LessThan => 4,
+            OpCode::Equals => 4,
             OpCode::Halt => 1,
             OpCode::Input => 2,
             OpCode::Output => 2,
+            OpCode::JumpIfTrue => 3,
+            OpCode::JumpIfFalse => 3,
             _ => 0
         }
     }
@@ -161,20 +166,34 @@ impl Iterator for IntCode<'_> {
 }
 
 impl IntCode<'_> {
-    fn run_program(&mut self, input: Option<i32>) {
+    fn run_program(&mut self, input: Option<i32>) -> Vec<i32> {
+        let mut output = Vec::<i32>::new();
+
         while let Some(i) = self.next() {
-            self.execute(i, input);
+            if let Some(result) = self.execute(i, input) {
+                output.push(result);
+            };
         }
+
+        output
     }
 
-    fn execute(&self, i: Instruction, input: Option<i32>) {
+    fn execute(&mut self, i: Instruction, input: Option<i32>) -> Option<i32> {
+        let mut output = None;
+
         match i.op {
             OpCode::Add => self.add(i),
             OpCode::Mul => self.mul(i),
             OpCode::Input => self.mem.write(i.args[0].unwrap() as usize, input.unwrap()),
-            OpCode::Output => println!("Output: {}", self.mem.read(i.args[0].unwrap() as usize)),
+            OpCode::Output => output = Some(self.mem.read(i.args[0].unwrap() as usize)),
+            OpCode::JumpIfFalse => self.jump_if_false(i),
+            OpCode::JumpIfTrue => self.jump_if_true(i),
+            OpCode::Equals => self.equal(i),
+            OpCode::LessThan => self.less_than(i),
             _ => (),
         }
+
+        output
     }
 
     fn add(&self, i: Instruction) {
@@ -202,12 +221,76 @@ impl IntCode<'_> {
 
         self.mem.write(i.args[2].unwrap() as usize, op1 * op2);
     }
+
+    fn jump_if_true(&mut self, i: Instruction) {
+        let op1 = match i.modes[0] {
+            ParameterMode::Immediate => i.args[0].unwrap(),
+            ParameterMode::Position => self.mem.read(i.args[0].unwrap() as usize),
+        };
+        let op2 = match i.modes[1] {
+            ParameterMode::Immediate => i.args[1].unwrap(),
+            ParameterMode::Position => self.mem.read(i.args[1].unwrap() as usize),
+        };
+
+        if op1 != 0 { self.ic = op2 as usize; }
+    }
+
+    fn jump_if_false(&mut self, i: Instruction) {
+        let op1 = match i.modes[0] {
+            ParameterMode::Immediate => i.args[0].unwrap(),
+            ParameterMode::Position => self.mem.read(i.args[0].unwrap() as usize),
+        };
+        let op2 = match i.modes[1] {
+            ParameterMode::Immediate => i.args[1].unwrap(),
+            ParameterMode::Position => self.mem.read(i.args[1].unwrap() as usize),
+        };
+
+        if op1 == 0 { self.ic = op2 as usize;}
+    }
+
+    fn less_than(&self, i: Instruction) {
+        let op1 = match i.modes[0] {
+            ParameterMode::Immediate => i.args[0].unwrap(),
+            ParameterMode::Position => self.mem.read(i.args[0].unwrap() as usize),
+        };
+        let op2 = match i.modes[1] {
+            ParameterMode::Immediate => i.args[1].unwrap(),
+            ParameterMode::Position => self.mem.read(i.args[1].unwrap() as usize),
+        };
+        let op3 = i.args[2].unwrap();
+
+        if op1 < op2 {
+            self.mem.write(op3 as usize, 1);
+        } else {
+            self.mem.write(op3 as usize, 0);
+        }
+    }
+
+    fn equal(&self, i: Instruction) {
+        let op1 = match i.modes[0] {
+            ParameterMode::Immediate => i.args[0].unwrap(),
+            ParameterMode::Position => self.mem.read(i.args[0].unwrap() as usize),
+        };
+        let op2 = match i.modes[1] {
+            ParameterMode::Immediate => i.args[1].unwrap(),
+            ParameterMode::Position => self.mem.read(i.args[1].unwrap() as usize),
+        };
+        let op3 = i.args[2].unwrap();
+
+        if op1 == op2 {
+            self.mem.write(op3 as usize, 1);
+        } else {
+            self.mem.write(op3 as usize, 0);
+        }
+    }
 }
 
 fn main() {
     let mut source = File::open(Path::new(&args().next_back().unwrap())).unwrap();
 
-    day5(&mut source);
+    //day5(&mut source, 1);
+
+    day5(&mut source, 5);
 
     //day2(&mut source);
 
@@ -225,7 +308,7 @@ fn main() {
     //println!("{}", intcode.mem.read(0));
 }
 
-fn day5(source: &mut File) {
+fn day5(source: &mut File, mod_id: i32) {
     let mut buf = Vec::<i32>::new();
     load_program(&mut buf, source);
 
@@ -238,7 +321,7 @@ fn day5(source: &mut File) {
         ic: 0
     };
 
-    intcode.run_program(Some(1));
+    dbg!(intcode.run_program(Some(mod_id)));
 }
 
 fn day2(source: &mut File) {
@@ -342,23 +425,22 @@ mod tests {
         assert_eq!(intcode.next(), Some(Instruction{
             op: OpCode::Add,
             args: [Some(0), Some(1), Some(8)],
-            modes: [ParameterMode::Position, ParameterMode::Position, ParameterMode::Immediate],
+            modes: [ParameterMode::Immediate, ParameterMode::Position, ParameterMode::Position],
             len: 4
         }));
     }
 
     #[test]
     fn execution() {
-        let mut memory = memory();
+        let mut memory = Memory {
+            bucket: RefCell::new(vec![3,9,8,9,10,9,4,9,99,-1,8]),
+        };
         let mut intcode = IntCode {
             mem: &mut memory,
             ic: 0,
         };
 
-        let i = intcode.next().unwrap();
-        intcode.execute(i, None);
-
-        assert_eq!(intcode.mem.read(12), 3);
+        assert_eq!(intcode.run_program(Some(7)), vec![0]);
     }
 
     fn memory() -> Memory {
