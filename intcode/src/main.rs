@@ -102,21 +102,18 @@ impl Instruction {
 
     fn process_label(label: i32) -> (i32, i32, i32, i32) {
         let mut label = label;
-        let mut parts: [i32;4] = [0;4];
+        let mut parts: [i32;3] = [0;3];
 
-        for pos in (1..5).rev() {
-            let div = 10_i32.pow(pos);
+        for pos in 2..5 {
+            let div = 10_i32.pow(6 - pos);
             let mode = label/div;
 
-            parts[(pos - 1) as usize] = mode;
+            parts[(pos - 2) as usize] = mode;
 
             label = label - (mode * div);
         }
 
-        //dbg!(&label);
-        //dbg!(&parts);
-
-        (label, parts[1], parts[2], parts[3])
+        (label, parts[2], parts[1], parts[0])
     }
 
     fn len(op: &OpCode) -> usize {
