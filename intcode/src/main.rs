@@ -1,3 +1,7 @@
+extern crate itertools;
+
+use itertools::Itertools;
+
 use std::cell::RefCell;
 use std::env::args;
 use std::fs::File;
@@ -158,6 +162,8 @@ impl Iterator for IntCode<'_> {
                 for i in 0..(instruction.len - 1) {
                     instruction.args[i] = Some(self.mem.read(self.ic + (i + 1)));
                 }
+                // Incrementing the program counter here is fine because the instruction
+                // is ecexuted afterwords, this means we don't mess with our jump addresses.
                 self.ic = self.ic + instruction.len;
                 Some(instruction)
             },
@@ -166,7 +172,7 @@ impl Iterator for IntCode<'_> {
 }
 
 impl IntCode<'_> {
-    fn run_program(&mut self, input: Option<i32>) -> Vec<i32> {
+    fn run_program(&mut self, input: &mut Vec<i32>) -> Vec<i32> {
         let mut output = Vec::<i32>::new();
 
         while let Some(i) = self.next() {
@@ -178,13 +184,13 @@ impl IntCode<'_> {
         output
     }
 
-    fn execute(&mut self, i: Instruction, input: Option<i32>) -> Option<i32> {
+    fn execute(&mut self, i: Instruction, input: &mut Vec<i32>) -> Option<i32> {
         let mut output = None;
 
         match i.op {
             OpCode::Add => self.add(i),
             OpCode::Mul => self.mul(i),
-            OpCode::Input => self.mem.write(i.args[0].unwrap() as usize, input.unwrap()),
+            OpCode::Input => self.mem.write(i.args[0].unwrap() as usize, input.remove(0)),
             OpCode::Output => output = Some(self.mem.read(i.args[0].unwrap() as usize)),
             OpCode::JumpIfFalse => self.jump_if_false(i),
             OpCode::JumpIfTrue => self.jump_if_true(i),
@@ -288,9 +294,11 @@ impl IntCode<'_> {
 fn main() {
     let mut source = File::open(Path::new(&args().next_back().unwrap())).unwrap();
 
+    day7(&mut source);
+
     //day5(&mut source, 1);
 
-    day5(&mut source, 5);
+    //day5(&mut source, 5);
 
     //day2(&mut source);
 
@@ -308,6 +316,57 @@ fn main() {
     //println!("{}", intcode.mem.read(0));
 }
 
+fn day7(source: &mut File) {
+    let mut buf = Vec::<i32>::new();
+    load_program(&mut buf, source);
+
+    let inputs: Vec<Vec<i32>> = (0..5).permutations(5).collect();
+
+    let max = inputs.iter().map(|i| {
+        amplifier_sequence(&i, &buf)
+    }).max();
+
+    dbg!(max);
+
+    //for i in 0..5 {
+    //    (i + 5) % 5
+    //}
+}
+
+fn amplifier_sequence(seq: &Vec<i32>, mem: &Vec<i32>) -> i32 {
+    let mut output = 0;
+
+    for x in 0..5 {
+        let mut memory = Memory {
+            bucket: RefCell::new(mem.clone()),
+        };
+
+        let mut intcode = IntCode {
+            mem: &mut memory,
+            ic: 0
+        };
+
+        let mut args: Vec<i32> = Vec::new();
+
+        args.push(seq[x]);
+        args.push(output);
+        output = intcode.run_program(&mut args)[0];
+        //if let o = output {
+        //    args.push(seq[x]);
+        //    args.push(o);
+        //    dbg!(&args);
+        //    output = intcode.run_program(&mut args)[0];
+        //} else {
+        //    args.push(seq[x]);
+        //    args.push(0);
+        //    dbg!(&args);
+        //    output = Some(intcode.run_program(&mut args)[0]);
+        //}
+    }
+
+    output
+}
+
 fn day5(source: &mut File, mod_id: i32) {
     let mut buf = Vec::<i32>::new();
     load_program(&mut buf, source);
@@ -321,7 +380,9 @@ fn day5(source: &mut File, mod_id: i32) {
         ic: 0
     };
 
-    dbg!(intcode.run_program(Some(mod_id)));
+    let mut inputs = vec![mod_id];
+
+    dbg!(intcode.run_program(&mut inputs));
 }
 
 fn day2(source: &mut File) {
@@ -339,10 +400,12 @@ fn day2(source: &mut File) {
                 ic: 0,
             };
 
+            let mut inputs = vec![];
+
             intcode.mem.write(1, x);
             intcode.mem.write(2, y);
 
-            intcode.run_program(None);
+            intcode.run_program(&mut inputs);
 
             if intcode.mem.read(0) == 19690720 {
                 println!("x: {}, y: {}", x, y);
@@ -440,7 +503,46 @@ mod tests {
             ic: 0,
         };
 
-        assert_eq!(intcode.run_program(Some(7)), vec![0]);
+        let mut args = vec![7];
+
+        assert_eq!(intcode.run_program(&mut args), vec![0]);
+    }
+
+    #[test]
+    fn amplifier_long() {
+        let buf = vec![3,31,3,32,1002,32,10,32,1001,31,-2,31,1007,31,0,33,1002,33,7,33,1,33,31,31,1,32,31,31,4,31,99,0,0,0];
+        let seq = vec![1,0,4,3,2];
+        let result = amplifier_sequence(&seq, &buf);
+
+        assert_eq!(result, 65210);
+    }
+
+    #[test]
+    fn amplifier_short() {
+        // 17 elements, last position 16
+        let buf = vec![3,15,3,16,1002,16,10,16,1,16,15,15,4,15,99,0,0];
+        let seq = vec![4,3,2,1,0];
+        let result = amplifier_sequence(&seq, &buf);
+
+        assert_eq!(result, 43210);
+    }
+
+    #[test]
+    fn amplifier_medium() {
+        let buf = vec![3,23,3,24,1002,24,10,24,1002,23,-1,23,101,5,23,23,1,24,23,23,4,23,99,0,0];
+        let seq = vec![0,1,2,3,4];
+        let result = amplifier_sequence(&seq, &buf);
+
+        assert_eq!(result, 54321);
+    }
+
+    #[test]
+    fn feedback_small() {
+        let buf = vec![3,26,1001,26,-4,26,3,27,1002,27,2,27,1,27,26,27,4,27,1001,28,-1,28,1005,28,6,99,0,0,5];
+        let seq = vec![9,8,7,6,5];
+        let result = amplifier_sequence(&seq, &buf);
+
+        assert_eq!(result, 139629729);
     }
 
     fn memory() -> Memory {

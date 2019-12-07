@@ -4,5 +4,6 @@ members = [
     "fuel_requirement",
     "intcode",
     "wiring",
-    "password"
+    "password",
+    "orbits"
 ]
