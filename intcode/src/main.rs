@@ -12,16 +12,25 @@ use std::process::exit;
 
 #[derive(Debug)]
 struct Memory {
-    bucket: RefCell<Vec<i32>>,
+    bucket: RefCell<Vec<i64>>,
 }
 
 impl Memory {
-    fn read(&self, index: usize) -> i32 {
-        self.bucket.borrow()[index]
+    fn read(&self, index: usize) -> i64 {
+        if self.bucket.borrow().len() <= index {
+            0
+        } else {
+            self.bucket.borrow()[index]
+        }
     }
 
-    fn write(&self, index: usize, value: i32) {
-        self.bucket.borrow_mut()[index] = value;
+    fn write(&self, index: usize, value: i64) {
+        if self.bucket.borrow().len() <= index {
+            self.bucket.borrow_mut().resize_with(index + 1, {|| 0 as i64});
+            self.bucket.borrow_mut()[index] = value;
+        } else {
+            self.bucket.borrow_mut()[index] = value;
+        }
     }
 }
 
@@ -36,11 +45,12 @@ enum OpCode {
     JumpIfFalse,
     LessThan,
     Equals,
+    RelativeBase,
     Unknown,
 }
 
-impl From<i32> for OpCode {
-    fn from(i: i32) -> OpCode {
+impl From<i64> for OpCode {
+    fn from(i: i64) -> OpCode {
         match i {
             1 => OpCode::Add,
             2 => OpCode::Mul,
@@ -50,6 +60,7 @@ impl From<i32> for OpCode {
             6 => OpCode::JumpIfFalse,
             7 => OpCode::LessThan,
             8 => OpCode::Equals,
+            9 => OpCode::RelativeBase,
             99 => OpCode::Halt,
             _ => OpCode::Unknown,
         }
@@ -60,11 +71,13 @@ impl From<i32> for OpCode {
 enum ParameterMode {
     Position,
     Immediate,
+    Relative,
 }
 
-impl From<i32> for ParameterMode {
-    fn from(f: i32) -> ParameterMode {
+impl From<i64> for ParameterMode {
+    fn from(f: i64) -> ParameterMode {
         match f {
+            2 => ParameterMode::Relative,
             1 => ParameterMode::Immediate,
             _ => ParameterMode::Position,
         }
@@ -74,7 +87,7 @@ impl From<i32> for ParameterMode {
 #[derive(PartialEq, Eq, Debug)]
 struct Instruction {
     op: OpCode,
-    pub args: [Option<i32>;3],
+    pub args: [Option<i64>;3],
     modes: [ParameterMode;3],
     len: usize,
 }
@@ -91,7 +104,7 @@ impl Default for Instruction {
 }
 
 impl Instruction {
-    fn new(label: i32) -> Self {
+    fn new(label: i64) -> Self {
         let label_parts = Self::process_label(label);
         let opcode = OpCode::from(label_parts.0);
         let modes = [ParameterMode::from(label_parts.1), ParameterMode::from(label_parts.2), ParameterMode::from(label_parts.3)];
@@ -105,12 +118,12 @@ impl Instruction {
         }
     }
 
-    fn process_label(label: i32) -> (i32, i32, i32, i32) {
+    fn process_label(label: i64) -> (i64, i64, i64, i64) {
         let mut label = label;
-        let mut parts: [i32;3] = [0;3];
+        let mut parts: [i64;3] = [0;3];
 
         for pos in 2..5 {
-            let div = 10_i32.pow(6 - pos);
+            let div = 10_i64.pow(6 - pos);
             let mode = label/div;
 
             parts[(pos - 2) as usize] = mode;
@@ -132,17 +145,20 @@ impl Instruction {
             OpCode::Output => 2,
             OpCode::JumpIfTrue => 3,
             OpCode::JumpIfFalse => 3,
+            OpCode::RelativeBase => 2,
             _ => 0
         }
     }
 }
 
-struct IntCode<'ic> {
-    mem: &'ic mut Memory,
+#[derive(Debug)]
+struct IntCode {
+    mem: Memory,
     ic: usize,
+    relative_base: usize,
 }
 
-impl Iterator for IntCode<'_> {
+impl Iterator for IntCode {
     type Item = Instruction;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -171,9 +187,17 @@ impl Iterator for IntCode<'_> {
     }
 }
 
-impl IntCode<'_> {
-    fn run_program(&mut self, input: &mut Vec<i32>) -> Vec<i32> {
-        let mut output = Vec::<i32>::new();
+impl IntCode {
+    fn new(mem: Memory) -> Self {
+        IntCode {
+            mem,
+            ic: 0,
+            relative_base: 0,
+        }
+    }
+
+    fn run_program(&mut self, input: &mut Vec<i64>) -> Vec<i64> {
+        let mut output = Vec::<i64>::new();
 
         while let Some(i) = self.next() {
             if let Some(result) = self.execute(i, input) {
@@ -184,86 +208,86 @@ impl IntCode<'_> {
         output
     }
 
-    fn execute(&mut self, i: Instruction, input: &mut Vec<i32>) -> Option<i32> {
+    fn execute(&mut self, i: Instruction, input: &mut Vec<i64>) -> Option<i64> {
         let mut output = None;
 
         match i.op {
             OpCode::Add => self.add(i),
             OpCode::Mul => self.mul(i),
-            OpCode::Input => self.mem.write(i.args[0].unwrap() as usize, input.remove(0)),
-            OpCode::Output => output = Some(self.mem.read(i.args[0].unwrap() as usize)),
+            OpCode::Input => self.input(i, input),
+            OpCode::Output => output = self.output(i),
             OpCode::JumpIfFalse => self.jump_if_false(i),
             OpCode::JumpIfTrue => self.jump_if_true(i),
             OpCode::Equals => self.equal(i),
             OpCode::LessThan => self.less_than(i),
+            OpCode::RelativeBase => self.relative_inc(i),
             _ => (),
         }
 
         output
     }
 
-    fn add(&self, i: Instruction) {
-        let op1 = match i.modes[0] {
-            ParameterMode::Immediate => i.args[0].unwrap(),
-            ParameterMode::Position => self.mem.read(i.args[0].unwrap() as usize),
-        };
-        let op2 = match i.modes[1] {
-            ParameterMode::Immediate => i.args[1].unwrap(),
-            ParameterMode::Position => self.mem.read(i.args[1].unwrap() as usize),
+    fn input(&self, i: Instruction, inputs: &mut Vec<i64>) {
+        let op1 = match &i.modes[0] {
+            ParameterMode::Relative => {
+                let pos = self.relative_base as i64 + i.args[0].unwrap();
+                pos as usize
+            },
+            _ => i.args[0].unwrap() as usize,
         };
 
-        self.mem.write(i.args[2].unwrap() as usize, op1 + op2);
+        self.mem.write(op1, inputs.remove(0));
+    }
+
+    fn output(&self, i: Instruction) -> Option<i64> {
+        let op1 = self.value(i.args[0].unwrap(), &i.modes[0]);
+
+        Some(op1)
+    }
+
+    fn add(&self, i: Instruction) {
+        let op1 = self.value(i.args[0].unwrap(), &i.modes[0]);
+        let op2 = self.value(i.args[1].unwrap(), &i.modes[1]);
+        let op3 = match i.modes[2] {
+            ParameterMode::Relative => i.args[2].unwrap() + self.relative_base as i64,
+            _ => i.args[2].unwrap(),
+        };
+
+        self.mem.write(op3 as usize, op1 + op2);
     }
 
     fn mul(&self, i: Instruction) {
-        let op1 = match i.modes[0] {
-            ParameterMode::Immediate => i.args[0].unwrap(),
-            ParameterMode::Position => self.mem.read(i.args[0].unwrap() as usize),
-        };
-        let op2 = match i.modes[1] {
-            ParameterMode::Immediate => i.args[1].unwrap(),
-            ParameterMode::Position => self.mem.read(i.args[1].unwrap() as usize),
+        let op1 = self.value(i.args[0].unwrap(), &i.modes[0]);
+        let op2 = self.value(i.args[1].unwrap(), &i.modes[1]);
+        let op3 = match i.modes[2] {
+            ParameterMode::Relative => i.args[2].unwrap() + self.relative_base as i64,
+            _ => i.args[2].unwrap(),
         };
 
-        self.mem.write(i.args[2].unwrap() as usize, op1 * op2);
+        self.mem.write(op3 as usize, op1 * op2);
     }
 
     fn jump_if_true(&mut self, i: Instruction) {
-        let op1 = match i.modes[0] {
-            ParameterMode::Immediate => i.args[0].unwrap(),
-            ParameterMode::Position => self.mem.read(i.args[0].unwrap() as usize),
-        };
-        let op2 = match i.modes[1] {
-            ParameterMode::Immediate => i.args[1].unwrap(),
-            ParameterMode::Position => self.mem.read(i.args[1].unwrap() as usize),
-        };
+        let op1 = self.value(i.args[0].unwrap(), &i.modes[0]);
+        let op2 = self.value(i.args[1].unwrap(), &i.modes[1]);
 
         if op1 != 0 { self.ic = op2 as usize; }
     }
 
     fn jump_if_false(&mut self, i: Instruction) {
-        let op1 = match i.modes[0] {
-            ParameterMode::Immediate => i.args[0].unwrap(),
-            ParameterMode::Position => self.mem.read(i.args[0].unwrap() as usize),
-        };
-        let op2 = match i.modes[1] {
-            ParameterMode::Immediate => i.args[1].unwrap(),
-            ParameterMode::Position => self.mem.read(i.args[1].unwrap() as usize),
-        };
+        let op1 = self.value(i.args[0].unwrap(), &i.modes[0]);
+        let op2 = self.value(i.args[1].unwrap(), &i.modes[1]);
 
-        if op1 == 0 { self.ic = op2 as usize;}
+        if op1 == 0 { self.ic = op2 as usize; }
     }
 
     fn less_than(&self, i: Instruction) {
-        let op1 = match i.modes[0] {
-            ParameterMode::Immediate => i.args[0].unwrap(),
-            ParameterMode::Position => self.mem.read(i.args[0].unwrap() as usize),
+        let op1 = self.value(i.args[0].unwrap(), &i.modes[0]);
+        let op2 = self.value(i.args[1].unwrap(), &i.modes[1]);
+        let op3 = match i.modes[2] {
+            ParameterMode::Relative => i.args[2].unwrap() + self.relative_base as i64,
+            _ => i.args[2].unwrap(),
         };
-        let op2 = match i.modes[1] {
-            ParameterMode::Immediate => i.args[1].unwrap(),
-            ParameterMode::Position => self.mem.read(i.args[1].unwrap() as usize),
-        };
-        let op3 = i.args[2].unwrap();
 
         if op1 < op2 {
             self.mem.write(op3 as usize, 1);
@@ -273,15 +297,12 @@ impl IntCode<'_> {
     }
 
     fn equal(&self, i: Instruction) {
-        let op1 = match i.modes[0] {
-            ParameterMode::Immediate => i.args[0].unwrap(),
-            ParameterMode::Position => self.mem.read(i.args[0].unwrap() as usize),
+        let op1 = self.value(i.args[0].unwrap(), &i.modes[0]);
+        let op2 = self.value(i.args[1].unwrap(), &i.modes[1]);
+        let op3 = match i.modes[2] {
+            ParameterMode::Relative => i.args[2].unwrap() + self.relative_base as i64,
+            _ => i.args[2].unwrap(),
         };
-        let op2 = match i.modes[1] {
-            ParameterMode::Immediate => i.args[1].unwrap(),
-            ParameterMode::Position => self.mem.read(i.args[1].unwrap() as usize),
-        };
-        let op3 = i.args[2].unwrap();
 
         if op1 == op2 {
             self.mem.write(op3 as usize, 1);
@@ -289,12 +310,69 @@ impl IntCode<'_> {
             self.mem.write(op3 as usize, 0);
         }
     }
+
+    fn relative_inc(&mut self, i: Instruction) {
+        let op1 = self.value(i.args[0].unwrap(), &i.modes[0]);
+        let new_base = self.relative_base as i64 + op1;
+
+        self.relative_base = new_base as usize;
+    }
+
+    fn value(&self, op: i64, pm: &ParameterMode) -> i64 {
+        match pm {
+            ParameterMode::Immediate => op,
+            ParameterMode::Position => self.mem.read(op as usize),
+            ParameterMode::Relative => {
+                let position = op + self.relative_base as i64;
+                self.mem.read(position as usize)
+            }
+        }
+    }
+}
+
+struct Amplifier {
+    phase: i64,
+    cpu: IntCode,
+}
+
+impl Amplifier {
+    fn new(phase: i64, cpu: IntCode) -> Self {
+        Amplifier {
+            phase,
+            cpu,
+        }
+    }
+
+    fn run(&mut self, input: i64) -> Option<i64> {
+        let mut result = None;
+        let mut input = if self.cpu.ic == 0 {
+            vec![self.phase, input]
+        } else {
+            vec![input]
+        };
+
+        while let Some(i) = self.cpu.next() {
+            match i.op {
+                OpCode::Output => {
+                    result = self.cpu.execute(i, &mut input);
+                    break;
+                },
+                _ => {
+                    self.cpu.execute(i, &mut input);
+                }
+            }
+        }
+
+        result
+    }
 }
 
 fn main() {
     let mut source = File::open(Path::new(&args().next_back().unwrap())).unwrap();
 
-    day7(&mut source);
+    day9(&mut source);
+
+    //day7(&mut source);
 
     //day5(&mut source, 1);
 
@@ -316,11 +394,25 @@ fn main() {
     //println!("{}", intcode.mem.read(0));
 }
 
-fn day7(source: &mut File) {
-    let mut buf = Vec::<i32>::new();
+fn day9(source: &mut File) {
+    let mut buf = Vec::<i64>::new();
     load_program(&mut buf, source);
 
-    let inputs: Vec<Vec<i32>> = (0..5).permutations(5).collect();
+    let mem = Memory {
+        bucket: RefCell::new(buf),
+    };
+
+    let mut intcode = IntCode::new(mem);
+    let mut input: Vec<i64> = vec![1];
+
+    dbg!(intcode.run_program(&mut input));
+}
+
+fn day7(source: &mut File) {
+    let mut buf = Vec::<i64>::new();
+    load_program(&mut buf, source);
+
+    let inputs: Vec<Vec<i64>> = (0..5).permutations(5).collect();
 
     let max = inputs.iter().map(|i| {
         amplifier_sequence(&i, &buf)
@@ -328,58 +420,77 @@ fn day7(source: &mut File) {
 
     dbg!(max);
 
+    let inputs: Vec<Vec<i64>> = (5..10).permutations(5).collect();
+
+    let max = inputs.iter().map(|i| {
+        feedback(&i, &buf)
+    }).max();
+
+    println!("Feedback: {}", max.unwrap());
+
     //for i in 0..5 {
     //    (i + 5) % 5
     //}
 }
 
-fn amplifier_sequence(seq: &Vec<i32>, mem: &Vec<i32>) -> i32 {
+fn feedback(seq: &Vec<i64>, mem: &Vec<i64>) -> i64 {
+    let mut value = 0;
+    let mut amps = Vec::<Amplifier>::new();
+
+    for i in seq.iter() {
+        let memory = Memory {
+            bucket: RefCell::new(mem.clone()),
+        };
+        let intcode = IntCode::new(memory);
+        let amp = Amplifier::new(*i, intcode);
+
+        amps.push(amp);
+    }
+
+    while amps.len() > 0 {
+        for x in 0..5 {
+            if amps.len() > x {
+                match amps[x].run(value) {
+                    Some(v) => value = v,
+                    None => {
+                        amps.remove(x);
+                    }
+                }
+            }
+        }
+    }
+
+    value
+}
+
+fn amplifier_sequence(seq: &Vec<i64>, mem: &Vec<i64>) -> i64 {
     let mut output = 0;
 
     for x in 0..5 {
-        let mut memory = Memory {
+        let memory = Memory {
             bucket: RefCell::new(mem.clone()),
         };
+        let mut intcode = IntCode::new(memory);
+        let mut args: Vec<i64> = Vec::new();
 
-        let mut intcode = IntCode {
-            mem: &mut memory,
-            ic: 0
-        };
-
-        let mut args: Vec<i32> = Vec::new();
+        dbg!(&intcode.mem);
 
         args.push(seq[x]);
         args.push(output);
         output = intcode.run_program(&mut args)[0];
-        //if let o = output {
-        //    args.push(seq[x]);
-        //    args.push(o);
-        //    dbg!(&args);
-        //    output = intcode.run_program(&mut args)[0];
-        //} else {
-        //    args.push(seq[x]);
-        //    args.push(0);
-        //    dbg!(&args);
-        //    output = Some(intcode.run_program(&mut args)[0]);
-        //}
     }
 
     output
 }
 
-fn day5(source: &mut File, mod_id: i32) {
-    let mut buf = Vec::<i32>::new();
+fn day5(source: &mut File, mod_id: i64) {
+    let mut buf = Vec::<i64>::new();
     load_program(&mut buf, source);
 
-    let mut memory = Memory {
+    let memory = Memory {
         bucket: RefCell::new(buf),
     };
-
-    let mut intcode = IntCode {
-        mem: &mut memory,
-        ic: 0
-    };
-
+    let mut intcode = IntCode::new(memory);
     let mut inputs = vec![mod_id];
 
     dbg!(intcode.run_program(&mut inputs));
@@ -388,18 +499,13 @@ fn day5(source: &mut File, mod_id: i32) {
 fn day2(source: &mut File) {
     for x in 0..100 {
         for y in 0..100 {
-            let mut buf = Vec::<i32>::new();
+            let mut buf = Vec::<i64>::new();
             load_program(&mut buf, source);
 
-            let mut memory = Memory {
+            let memory = Memory {
                 bucket: RefCell::new(buf),
             };
-
-            let mut intcode = IntCode {
-                mem: &mut memory,
-                ic: 0,
-            };
-
+            let mut intcode = IntCode::new(memory);
             let mut inputs = vec![];
 
             intcode.mem.write(1, x);
@@ -417,7 +523,7 @@ fn day2(source: &mut File) {
     }
 }
 
-fn load_program(mem: &mut Vec<i32>, file: &mut File) {
+fn load_program(mem: &mut Vec<i64>, file: &mut File) {
     let mut content = String::new();
 
     file.read_to_string(&mut content).unwrap();
@@ -427,7 +533,7 @@ fn load_program(mem: &mut Vec<i32>, file: &mut File) {
         .trim_end()
         .split(',')
         .map(|x| {
-            match x.parse::<i32>() {
+            match x.parse::<i64>() {
                 Ok(n) => mem.push(n),
                 Err(_) => println!("Parse failed: {}", x),
             }
@@ -442,11 +548,8 @@ mod tests {
 
     #[test]
     fn get_instruction() {
-        let mut memory = memory();
-        let mut intcode = IntCode {
-            mem: &mut memory,
-            ic: 0,
-        };
+        let memory = memory();
+        let mut intcode = IntCode::new(memory);
 
         assert_eq!(intcode.next(), Some(Instruction{
             op: OpCode::Add,
@@ -458,11 +561,8 @@ mod tests {
 
     #[test]
     fn get_multiple_instructions() {
-        let mut memory = memory();
-        let mut intcode = IntCode {
-            mem: &mut memory,
-            ic: 0,
-        };
+        let memory = memory();
+        let mut intcode = IntCode::new(memory);
 
         intcode.next();
 
@@ -476,11 +576,8 @@ mod tests {
 
     #[test]
     fn compound_opcode() {
-        let mut memory = memory();
-        let mut intcode = IntCode {
-            mem: &mut memory,
-            ic: 0
-        };
+        let memory = memory();
+        let mut intcode = IntCode::new(memory);
 
         intcode.next();
         intcode.next();
@@ -495,14 +592,10 @@ mod tests {
 
     #[test]
     fn execution() {
-        let mut memory = Memory {
+        let memory = Memory {
             bucket: RefCell::new(vec![3,9,8,9,10,9,4,9,99,-1,8]),
         };
-        let mut intcode = IntCode {
-            mem: &mut memory,
-            ic: 0,
-        };
-
+        let mut intcode = IntCode::new(memory);
         let mut args = vec![7];
 
         assert_eq!(intcode.run_program(&mut args), vec![0]);
@@ -540,10 +633,50 @@ mod tests {
     fn feedback_small() {
         let buf = vec![3,26,1001,26,-4,26,3,27,1002,27,2,27,1,27,26,27,4,27,1001,28,-1,28,1005,28,6,99,0,0,5];
         let seq = vec![9,8,7,6,5];
-        let result = amplifier_sequence(&seq, &buf);
+        let result = feedback(&seq, &buf);
 
         assert_eq!(result, 139629729);
     }
+
+    #[test]
+    fn boost_all() {
+        let buf = vec![109,1,204,-1,1001,100,1,100,1008,100,16,101,1006,101,0,99];
+        let memory = Memory {
+            bucket: RefCell::new(buf.clone()),
+        };
+        let mut intcode = IntCode::new(memory);
+        let mut input = vec![1];
+        let output = intcode.run_program(&mut input);
+
+        assert_eq!(output, buf);
+    }
+
+    #[test]
+    fn boost_long_number() {
+        let buf = vec![1102,34915192,34915192,7,4,7,99,0];
+        let memory = Memory {
+            bucket: RefCell::new(buf.clone()),
+        };
+        let mut intcode = IntCode::new(memory);
+        let mut input = vec![1];
+        let output = intcode.run_program(&mut input);
+
+        assert_eq!(output[0], 1219070632396864);
+    }
+
+    #[test]
+    fn boost_middle_number() {
+        let buf = vec![104,1125899906842624,99];
+        let memory = Memory {
+            bucket: RefCell::new(buf.clone()),
+        };
+        let mut intcode = IntCode::new(memory);
+        let mut input = vec![1];
+        let output = intcode.run_program(&mut input);
+
+        assert_eq!(output[0], 1125899906842624);
+    }
+
 
     fn memory() -> Memory {
         Memory {
