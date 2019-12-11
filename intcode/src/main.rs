@@ -403,7 +403,7 @@ fn day9(source: &mut File) {
     };
 
     let mut intcode = IntCode::new(mem);
-    let mut input: Vec<i64> = vec![1];
+    let mut input: Vec<i64> = vec![2];
 
     dbg!(intcode.run_program(&mut input));
 }
